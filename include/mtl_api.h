@@ -404,6 +404,8 @@ enum mtl_init_flag {
   MTL_FLAG_DEDICATED_SYS_LCORE = (MTL_BIT64(20)),
   /** not bind all MTL threads to NIC numa socket */
   MTL_FLAG_NOT_BIND_NUMA = (MTL_BIT64(21)),
+  /** use IGMPv2 for multicast */
+  MTL_FLAG_IGMP_V2 = (MTL_BIT64(22)),
 
   /**
    * use thread for cni message handling

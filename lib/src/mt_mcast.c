@@ -17,15 +17,15 @@ static inline struct mt_mcast_impl* get_mcast(struct mtl_main_impl* impl,
 
 /* Computing the Internet Checksum based on rfc1071 */
 static uint16_t mcast_msg_checksum(enum mcast_msg_type type, void* msg,
-                                   size_t mb_report_len) {
+                                   size_t mb_msg_len) {
   size_t size = 0;
 
   switch (type) {
     case MEMBERSHIP_QUERY:
-      size = sizeof(struct mcast_mb_query_v3);
-      break;
+    case MEMBERSHIP_REPORT_V2:
+    case LEAVE_GROUP:
     case MEMBERSHIP_REPORT_V3:
-      size = mb_report_len;
+      size = mb_msg_len;
       break;
     default:
       err("%s, wrong mcast msg type: %d\n", __func__, type);
@@ -97,17 +97,14 @@ static inline size_t mcast_create_group_record_leave(
   return record_len;
 }
 
-/* 224.0.0.22 */
-static struct rte_ether_addr const mcast_mac_dst = {{0x01, 0x00, 0x5e, 0x00, 0x00, 0x16}};
-
 static struct rte_ipv4_hdr* mcast_fill_ipv4(struct mtl_main_impl* impl,
-                                            enum mtl_port port, struct rte_mbuf* pkt) {
+                                            enum mtl_port port, struct rte_mbuf* pkt, uint32_t dst_ip) {
   struct rte_ether_hdr* eth_hdr;
   struct rte_ipv4_hdr* ip_hdr;
-
+  
   eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr*);
   mt_macaddr_get(impl, port, mt_eth_s_addr(eth_hdr));
-  rte_ether_addr_copy(&mcast_mac_dst, mt_eth_d_addr(eth_hdr));
+  mt_mcast_ip_to_mac((uint8_t *)&dst_ip, mt_eth_d_addr(eth_hdr)); //
   eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
   ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr*, sizeof(*eth_hdr));
@@ -119,15 +116,12 @@ static struct rte_ipv4_hdr* mcast_fill_ipv4(struct mtl_main_impl* impl,
   ip_hdr->total_length = 0;
   ip_hdr->next_proto_id = IPPROTO_IGMP;
   ip_hdr->src_addr = *(uint32_t*)mt_sip_addr(impl, port);
-  inet_pton(AF_INET, IGMP_REPORT_IP, &ip_hdr->dst_addr);
+  ip_hdr->dst_addr = dst_ip;
 
   return ip_hdr;
 }
 
 #ifdef MCAST_ENABLE_QUERY
-/* 224.0.0.1 */
-static struct rte_ether_addr const mcast_mac_query = {
-    {0x01, 0x00, 0x5e, 0x00, 0x00, 0x01}};
 
 int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port port) {
   struct rte_mbuf* pkt;
@@ -142,7 +136,7 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
     return -ENOMEM;
   }
 
-  ip_hdr = mcast_fill_ipv4(impl, port, pkt);
+  ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(RTE_IPV4_ALLHOSTS_GROUP));
   hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
 
   mb_query = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_query_v3*, hdr_offset);
@@ -179,6 +173,83 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
 }
 #endif
 
+static int mcast_membership_report_on_query_v2_single(struct mtl_main_impl* impl,
+                                             enum mtl_port port, uint32_t group_addr) {
+  struct rte_mbuf* pkt;
+  struct rte_ipv4_hdr* ip_hdr;
+  struct mcast_mb_msg_v2* mb_report;
+  size_t hdr_offset = 0;
+  size_t mb_report_len = sizeof(struct mcast_mb_msg_v2);
+
+  pkt = rte_pktmbuf_alloc(mt_sys_tx_mempool(impl, port));
+  if (!pkt) {
+    err("%s(%d), report packet alloc failed\n", __func__, port);
+    return -ENOMEM;
+  }
+
+  ip_hdr = mcast_fill_ipv4(impl, port, pkt, group_addr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+
+  mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_msg_v2*, hdr_offset);
+  mb_report->type = MEMBERSHIP_REPORT_V2;
+  mb_report->max_resp_code = 0x00;
+  mb_report->checksum = 0x00;
+  mb_report->group_addr = group_addr;
+
+  uint16_t checksum = mcast_msg_checksum(mb_report->type, mb_report, mb_report_len);
+  if (checksum <= 0) {
+    err("%s(%d), err checksum %d\n", __func__, checksum, port);
+    return -EIO;
+  }
+  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
+  mb_report->checksum = htons(checksum);
+
+  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
+  mt_mbuf_init_ipv4(pkt);
+  pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
+  pkt->data_len = pkt->pkt_len;
+
+#ifdef MCAST_DEBUG
+  /* send packet to kernel for capturing */
+  if (mt_has_virtio_user(impl, port)) {
+    struct mt_interface* inf = mt_if(impl, port);
+    rte_eth_tx_burst(inf->virtio_port_id, 0, (struct rte_mbuf**)&report_pkt, 1);
+  }
+#endif
+
+  uint16_t tx = mt_sys_queue_tx_burst(impl, port, &pkt, 1);
+  if (tx < 1) {
+    err("%s(%d), send pkt fail\n", __func__, port);
+    rte_pktmbuf_free(pkt);
+    return -EIO;
+  }
+
+  dbg("%s(%d), send pkt, mb_report_len %" PRIu64 "\n", __func__, port, mb_report_len);
+
+  return 0;
+}
+
+static int mcast_membership_report_on_query_v2(struct mtl_main_impl* impl,
+                                            enum mtl_port port) {
+  struct mt_mcast_impl* mcast = get_mcast(impl, port);
+  uint16_t group_num = mcast->group_num;
+
+  if (group_num <= 0) {
+    dbg("%s(%d), no group to join\n", __func__, port);
+    return 0;
+  }
+
+  dbg("%s(%d), group_num: %d\n", __func__, port, group_num);
+
+  struct mt_mcast_group_entry* group;
+  TAILQ_FOREACH(group, &mcast->group_list, entries) {
+    int ret = mcast_membership_report_on_query_v2_single(impl, port, group->group_ip);
+    if (ret < 0) return ret;
+  }
+
+  return 0;
+}
+
 /* membership report shaping, refer to RFC3376 - 4.2 */
 static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
                                             enum mtl_port port) {
@@ -203,7 +274,7 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
     return -ENOMEM;
   }
 
-  ip_hdr = mcast_fill_ipv4(impl, port, pkt);
+  ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(IPV4_IGMPV3_REPORT_GROUP));
   hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_report_v3*, hdr_offset);
@@ -273,7 +344,7 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
     return -ENOMEM;
   }
 
-  ip_hdr = mcast_fill_ipv4(impl, port, pkt);
+  ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(IPV4_IGMPV3_REPORT_GROUP));
   hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_report_v3*, hdr_offset);
@@ -332,6 +403,73 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
   return 0;
 }
 
+static int mcast_membership_report_on_action_v2(struct mtl_main_impl* impl,
+                                             enum mtl_port port, uint32_t group_addr,
+                                             enum mcast_action_type action) {
+  struct rte_mbuf* pkt;
+  struct rte_ipv4_hdr* ip_hdr;
+  struct mcast_mb_msg_v2* mb_report;
+  size_t hdr_offset = 0;
+  size_t mb_report_len = sizeof(struct mcast_mb_msg_v2);
+
+  pkt = rte_pktmbuf_alloc(mt_sys_tx_mempool(impl, port));
+  if (!pkt) {
+    err("%s(%d), report packet alloc failed\n", __func__, port);
+    return -ENOMEM;
+  }
+
+  ip_hdr = mcast_fill_ipv4(impl, port, pkt, action == MCAST_JOIN ? group_addr : RTE_BE32(RTE_IPV4_ALLRTRS_GROUP));
+  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+
+  mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_msg_v2*, hdr_offset);
+  mb_report->type = action == MCAST_JOIN ? MEMBERSHIP_REPORT_V2 : LEAVE_GROUP;
+  mb_report->max_resp_code = 0x00;
+  mb_report->checksum = 0x00;
+  mb_report->group_addr = group_addr;
+
+  uint16_t checksum = mcast_msg_checksum(mb_report->type, mb_report, mb_report_len);
+  if (checksum <= 0) {
+    err("%s(%d), err checksum %d\n", __func__, checksum, port);
+    return -EIO;
+  }
+  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
+  mb_report->checksum = htons(checksum);
+
+  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
+  mt_mbuf_init_ipv4(pkt);
+  pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
+  pkt->data_len = pkt->pkt_len;
+
+#ifdef MCAST_DEBUG
+  /* send packet to kernel for capturing */
+  if (mt_has_virtio_user(impl, port)) {
+    struct mt_interface* inf = mt_if(impl, port);
+    rte_eth_tx_burst(inf->virtio_port_id, 0, (struct rte_mbuf**)&report_pkt, 1);
+  }
+#endif
+  /* send membership report twice */
+  struct rte_mbuf* pkt_copy = rte_pktmbuf_copy(pkt, pkt->pool, 0, UINT32_MAX);
+
+  uint16_t tx = mt_sys_queue_tx_burst(impl, port, &pkt, 1);
+  if (tx < 1) {
+    err("%s(%d), send pkt fail\n", __func__, port);
+    rte_pktmbuf_free(pkt);
+    return -EIO;
+  }
+
+  tx = mt_sys_queue_tx_burst(impl, port, &pkt_copy, 1);
+  if (tx < 1) {
+    err("%s(%d), send pkt fail\n", __func__, port);
+    rte_pktmbuf_free(pkt_copy);
+    return -EIO;
+  }
+
+  info("%s(%d), send %s pkt, mb_report_len %" PRIu64 "\n", __func__, port,
+       action == MCAST_JOIN ? "join" : "leave", mb_report_len);
+
+  return 0;
+}
+
 static void mcast_membership_report_cb(void* param) {
   struct mtl_main_impl* impl = (struct mtl_main_impl*)param;
   int num_ports = mt_num_ports(impl);
@@ -342,7 +480,9 @@ static void mcast_membership_report_cb(void* param) {
     struct mt_mcast_impl* mcast = get_mcast(impl, port);
     if (!mcast) continue;
     if (!mcast->has_external_query) {
-      ret = mcast_membership_report_on_query(impl, port);
+      ret = mt_user_igmp_v2(impl) ?
+        mcast_membership_report_on_query_v2(impl, port) :
+        mcast_membership_report_on_query(impl, port);
       if (ret < 0) {
         err("%s(%d), mcast_membership_report fail %d\n", __func__, port, ret);
       }
@@ -557,7 +697,7 @@ int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sour
   struct rte_ether_addr mcast_mac;
   struct mt_interface* inf = mt_if(impl, port);
   uint8_t* ip = (uint8_t*)&group_addr;
-
+  
   if (mt_user_no_multicast(impl)) {
     return 0;
   }
@@ -605,7 +745,7 @@ int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sour
   }
 
   /* add source address to group's source list */
-  if (source_addr != 0) {
+  if (!mt_user_igmp_v2(impl) && source_addr != 0) {
     found = false;
     struct mt_mcast_src_entry* src;
     TAILQ_FOREACH(src, &group->src_list, entries) {
@@ -638,8 +778,10 @@ int mt_mcast_join(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sour
    * then join it again with any source is not allowed.
    */
   if (!found) {
-    int ret = mcast_membership_report_on_action(impl, port, group_addr, source_addr,
-                                                MCAST_JOIN);
+    int ret = mt_user_igmp_v2(impl) ?
+      mcast_membership_report_on_action_v2(impl, port, group_addr, MCAST_JOIN) :
+      mcast_membership_report_on_action(impl, port, group_addr, source_addr, MCAST_JOIN);
+
     if (ret < 0) {
       err("%s(%d), send membership report fail\n", __func__, port);
       return ret;
@@ -692,7 +834,7 @@ int mt_mcast_leave(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sou
 
   /* delete source */
   bool sdelete = false;
-  if (source_addr != 0) {
+  if (!mt_user_igmp_v2(impl) && source_addr != 0) {
     found = false;
     struct mt_mcast_src_entry* src;
     TAILQ_FOREACH(src, &group->src_list, entries) {
@@ -732,8 +874,10 @@ int mt_mcast_leave(struct mtl_main_impl* impl, uint32_t group_addr, uint32_t sou
 
   /* send leave report */
   if (gdelete || sdelete) {
-    int ret = mcast_membership_report_on_action(impl, port, group_addr, source_addr,
-                                                MCAST_LEAVE);
+    int ret = mt_user_igmp_v2(impl) ? 
+      mcast_membership_report_on_action_v2(impl, port, group_addr, MCAST_LEAVE) :
+      mcast_membership_report_on_action(impl, port, group_addr, source_addr, MCAST_LEAVE);
+
     if (ret < 0) {
       err("%s(%d), send leave report failed\n", __func__, port);
       return ret;
@@ -773,21 +917,30 @@ int mt_mcast_restore(struct mtl_main_impl* impl, enum mtl_port port) {
     for (uint32_t i = 0; i < inf->mcast_nb; i++)
       rte_eth_dev_mac_addr_add(port_id, &inf->mcast_mac_lists[i], 0);
   }
-  mcast_membership_report_on_query(impl, port);
+  if (mt_user_igmp_v2(impl))
+    mcast_membership_report_on_query_v2(impl, port);
+  else
+    mcast_membership_report_on_query(impl, port);
   return 0;
 }
 
-int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
-                   enum mtl_port port) {
+int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_msg_v2* query,
+                   size_t query_len, enum mtl_port port) {
   if (query->type != MEMBERSHIP_QUERY) {
-    err("%s(%d), invalid type %u, only allow igmp query packet\n", __func__, port,
-        query->type);
+    if (query->type == MEMBERSHIP_REPORT_V2) return 0;
+    err("%s(%d), invalid type 0x%02x, only allow igmp query or v2 membership packet\n", 
+        __func__, port, query->type);
     return -EIO;
   }
-
+  
+  if (query_len < 12 && query_len != 8) {
+    err("%s(%d), invalid query length %" PRIu64 "\n", __func__, port, query_len);
+    return -EIO;
+  }
+    
   uint16_t query_checksum = ntohs(query->checksum);
   query->checksum = 0;
-  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, 0);
+  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, query, query_len);
   if (checksum != query_checksum) {
     err("%s(%d), err checksum %d:%d\n", __func__, port, query_checksum, checksum);
     return -EIO;
@@ -799,6 +952,9 @@ int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
     mcast->has_external_query = true;
   }
 
-  mcast_membership_report_on_query(impl, port);
+  if (mt_user_igmp_v2(impl))
+    mcast_membership_report_on_query_v2(impl, port);
+  else
+    mcast_membership_report_on_query(impl, port);
   return 0;
 }

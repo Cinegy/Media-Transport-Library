@@ -9,13 +9,15 @@
 
 #define IP_IGMP_DSCP_VALUE 0xc0
 
-#define IGMP_REPORT_IP "224.0.0.22"
-#define IGMP_QUERY_IP "224.0.0.1"
+#define IPV4_IGMPV3_REPORT_GROUP ((uint32_t)0xe0000016) /**< 224.0.0.22 */
+
 #define IGMP_JOIN_GROUP_PERIOD_S (10)
 #define IGMP_JOIN_GROUP_PERIOD_US (IGMP_JOIN_GROUP_PERIOD_S * US_PER_S)
 
 enum mcast_msg_type {
   MEMBERSHIP_QUERY = 0x11,
+  MEMBERSHIP_REPORT_V2 = 0x16,
+  LEAVE_GROUP = 0x17,
   MEMBERSHIP_REPORT_V3 = 0x22,
 };
 
@@ -33,6 +35,15 @@ enum mcast_action_type {
   MCAST_LEAVE,
 };
 
+/* igmp v2 message */
+struct mcast_mb_msg_v2 {
+  uint8_t type;
+  uint8_t max_resp_code;
+  uint16_t checksum;
+  uint32_t group_addr;
+} __attribute__((__packed__)) __rte_aligned(2);
+
+/* igmp v3 */
 struct mcast_group_record {
   uint8_t record_type;
   uint8_t aux_data_len;
@@ -77,8 +88,8 @@ int mt_mcast_l2_join(struct mtl_main_impl* impl, struct rte_ether_addr* addr,
                      enum mtl_port port);
 int mt_mcast_l2_leave(struct mtl_main_impl* impl, struct rte_ether_addr* addr,
                       enum mtl_port port);
-int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_query_v3* query,
-                   enum mtl_port port);
+int mt_mcast_parse(struct mtl_main_impl* impl, struct mcast_mb_msg_v2* query,
+                   size_t query_len, enum mtl_port port);
 
 static inline void mt_mcast_ip_to_mac(uint8_t* mcast_ip4_addr,
                                       struct rte_ether_addr* mcast_mac) {
