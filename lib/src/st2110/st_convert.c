@@ -1908,6 +1908,15 @@ int st20_rfc4175_422be10_to_y210_simd(struct st20_rfc4175_422_10_pg2_be* pg_be,
   }
 #endif
 
+#ifdef MTL_HAS_AVX2
+  if ((level >= MTL_SIMD_LEVEL_AVX2) && (cpu_level >= MTL_SIMD_LEVEL_AVX2)) {
+    dbg("%s, avx2 ways\n", __func__);
+    ret = st20_rfc4175_422be10_to_y210_avx2(pg_be, pg_y210, w, h);
+    if (ret == 0) return 0;
+    dbg("%s, avx2 ways failed\n", __func__);
+  }
+#endif
+
   /* the last option */
   return st20_rfc4175_422be10_to_y210_scalar(pg_be, pg_y210, w, h);
 }

@@ -215,5 +215,41 @@ int st20_rfc4175_422le10_to_422be10_avx2(struct st20_rfc4175_422_10_pg2_le* pg_l
   return 0;
 }
 /* end st20_rfc4175_422le10_to_422be10_avx2 */
+
+int st20_rfc4175_422be10_to_y210_avx2(struct st20_rfc4175_422_10_pg2_be* pg_be,
+                                        uint16_t* pg_y210, uint32_t w, uint32_t h) {
+  __m128i shuffle_mask = _mm_set_epi8(5+2,5+3,5+3,5+4, 5+0,5+1,5+1,5+2,  2,3,3,4, 0,1,1,2);
+  __m128i mul_value = _mm_set_epi16(16,64,1,4, 16,64,1,4);
+  __m128i and_mask = _mm_set1_epi16(0xFFC0u);
+
+  int pg_cnt = w * h / 2;
+
+  while (pg_cnt > 3) {
+    __m128i input = _mm_loadu_si128((__m128i*)pg_be);
+    __m128i shuffle_result = _mm_shuffle_epi8(input, shuffle_mask);
+    __m128i mul_result = _mm_mullo_epi16(shuffle_result, mul_value);
+    __m128i result = _mm_and_si128(mul_result, and_mask);
+
+    _mm_storeu_si128((__m128i*)pg_y210, result);
+
+    pg_be += 2;
+    pg_y210 += 8;
+    pg_cnt -= 2;
+  }
+
+  while (pg_cnt > 0) {
+    *pg_y210 = (pg_be->Y00 << 10) + (pg_be->Y00_ << 6);
+    *(pg_y210 + 1) = (pg_be->Cb00 << 8) + (pg_be->Cb00_ << 6);
+    *(pg_y210 + 2) = (pg_be->Y01 << 14) + (pg_be->Y01_ << 6);
+    *(pg_y210 + 3) = (pg_be->Cr00 << 12) + (pg_be->Cr00_ << 6);
+    
+    pg_be++;
+    pg_y210 += 4;
+    pg_cnt--;
+  }
+
+  return 0;
+}
+
 MT_TARGET_CODE_STOP
 #endif

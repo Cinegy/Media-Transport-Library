@@ -41,6 +41,20 @@ static int perf_cvt_422_10_pg2_be_to_y210(mtl_handle st, int w, int h, int frame
   info("scalar, time: %f secs with %d frames(%dx%d,%fm@%d buffers)\n", duration, frames,
        w, h, planar_size_m, fb_cnt);
 
+  if (cpu_level >= MTL_SIMD_LEVEL_AVX2) {
+    start = clock();
+    for (int i = 0; i < frames * 1; i++) {
+      pg_be_in = pg_be + (i % fb_cnt) * (fb_pg2_size / sizeof(*pg_be));
+      pg_y210_out = pg_y210 + (i % fb_cnt) * (fb_pg2_size_y210 / sizeof(*pg_y210));
+      st20_rfc4175_422be10_to_y210_simd(pg_be_in, pg_y210_out, w, h, MTL_SIMD_LEVEL_AVX2);
+    }
+    end = clock();
+    float duration_simd = (float)(end - start) / CLOCKS_PER_SEC;
+    info("avx2, time: %f secs with %d frames(%dx%d@%d buffers)\n", duration_simd, frames,
+         w, h, fb_cnt);
+    info("avx2, %fx performance to scalar\n", duration / duration_simd);
+  }
+
   if (cpu_level >= MTL_SIMD_LEVEL_AVX512) {
     start = clock();
     for (int i = 0; i < frames; i++) {
