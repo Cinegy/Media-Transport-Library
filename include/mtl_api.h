@@ -9,7 +9,12 @@
  *
  */
 
+#ifdef _MSVC_LANG
+typedef uintptr_t pthread_t;
+#else
 #include <pthread.h>
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -138,7 +143,7 @@ typedef struct mtl_dma_mem* mtl_dma_mem_handle;
  */
 #define MTL_ALIGN(val, align) (((val) + ((align)-1)) & ~((align)-1))
 
-#ifdef __MTL_PYTHON_BUILD__
+#if defined(__MTL_PYTHON_BUILD__) || defined(_MSVC_LANG)
 /** swig not support __deprecated__ */
 #define __mtl_deprecated_msg(msg)
 #else
@@ -317,8 +322,12 @@ enum st21_tx_pacing_way {
 };
 
 /** MTL init flag */
+#ifdef _MSVC_LANG
+enum mtl_init_flag : uint64_t {
+#else
 enum mtl_init_flag {
-  /** lib will bind all MTL threads to NIC numa socket, default behavior */
+#endif
+  /** lib will bind all process threads to NIC numa socket, default behavior */
   MTL_FLAG_BIND_NUMA = (MTL_BIT64(0)),
   /** Enable built-in PTP implementation */
   MTL_FLAG_PTP_ENABLE = (MTL_BIT64(1)),
