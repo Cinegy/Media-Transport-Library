@@ -1082,7 +1082,7 @@ static void rv_slice_add(struct st_rx_video_session_impl* s,
 }
 
 static struct st_rx_video_slot_impl* rv_slot_by_tmstamp(
-    struct st_rx_video_session_impl* s, uint32_t tmstamp, void* hdr_split_pd,
+    struct st_rx_video_session_impl* s, uint32_t tmstamp, bool second_field, void* hdr_split_pd,
     bool* exist_ts) {
   int i, slot_idx;
   struct st_rx_video_slot_impl* slot;
@@ -1120,6 +1120,7 @@ static struct st_rx_video_slot_impl* rv_slot_by_tmstamp(
 
   rv_slot_init_frame_size(slot);
   slot->tmstamp = tmstamp;
+  slot->second_field = second_field;
   slot->seq_id_got = false;
   slot->pkts_received = 0;
   slot->pkts_recv_per_port[MTL_SESSION_PORT_P] = 0;
@@ -1160,6 +1161,7 @@ static struct st_rx_video_slot_impl* rv_slot_by_tmstamp(
     meta->timestamp = slot->tmstamp;
     meta->frame_total_size = s->st20_frame_size;
     meta->uframe_total_size = s->st20_uframe_size;
+    meta->second_field = slot->second_field;
     if (s->ops.query_ext_frame(s->ops.priv, &ext_frame, meta) < 0) {
       s->stat_slot_query_ext_fail++;
       dbg("%s(%d): query ext frame fail\n", __func__, s->idx);
@@ -1529,7 +1531,7 @@ static int rv_handle_frame_pkt(struct st_rx_video_session_impl* s, struct rte_mb
 
   /* find the target slot by tmstamp */
   bool exist_ts = false;
-  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, NULL, &exist_ts);
+  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, second_field, NULL, &exist_ts);
   if (!slot || !slot->frame) {
     if (exist_ts) {
       s->stat_pkts_redundant_dropped++;
@@ -1557,7 +1559,6 @@ static int rv_handle_frame_pkt(struct st_rx_video_session_impl* s, struct rte_mb
   }
 
   uint8_t* bitmap = slot->frame_bitmap;
-  slot->second_field = second_field;
 
   /* calculate offset */
   uint32_t offset;
@@ -1942,9 +1943,11 @@ static int rv_handle_st22_pkt(struct st_rx_video_session_impl* s, struct rte_mbu
     }
   }
 
+  bool second_field = (rtp->interlaced == 0x3) ? true : false;
+
   /* find the target slot by tmstamp */
   bool exist_ts = false;
-  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, NULL, &exist_ts);
+  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, second_field, NULL, &exist_ts);
   if (!slot || !slot->frame) {
     if (exist_ts) {
       s->stat_pkts_redundant_dropped++;
@@ -1955,8 +1958,6 @@ static int rv_handle_st22_pkt(struct st_rx_video_session_impl* s, struct rte_mbu
     return -EIO;
   }
   uint8_t* bitmap = slot->frame_bitmap;
-
-  slot->second_field = (rtp->interlaced == 0x3) ? true : false;
 
   dbg("%s(%d,%d), seq_id %d kmode %u trans_order %u\n", __func__, s->idx, s_port, seq_id,
       rtp->kmode, rtp->trans_order);
@@ -2112,9 +2113,12 @@ static int rv_handle_hdr_split_pkt(struct st_rx_video_session_impl* s,
     payload = rte_pktmbuf_mtod(mbuf_next, void*);
   }
 
+  bool second_field = (line1_number & ST20_SECOND_FIELD) ? true : false;
+  if (second_field) line1_number &= ~ST20_SECOND_FIELD;
+
   /* find the target slot by tmstamp */
   bool exist_ts = false;
-  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, payload, &exist_ts);
+  struct st_rx_video_slot_impl* slot = rv_slot_by_tmstamp(s, tmstamp, second_field, payload, &exist_ts);
   if (!slot || !slot->frame) {
     if (exist_ts) {
       s->stat_pkts_redundant_dropped++;
@@ -2124,9 +2128,8 @@ static int rv_handle_hdr_split_pkt(struct st_rx_video_session_impl* s,
     }
     return -EIO;
   }
+
   uint8_t* bitmap = slot->frame_bitmap;
-  slot->second_field = (line1_number & ST20_SECOND_FIELD) ? true : false;
-  line1_number &= ~ST20_SECOND_FIELD;
 
   /* check if the same pkt got already */
   if (slot->seq_id_got) {
