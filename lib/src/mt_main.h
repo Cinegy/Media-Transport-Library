@@ -569,9 +569,7 @@ struct mtl_sch_impl {
 
   /* sch sleep info */
   bool allow_sleep;
-  pthread_cond_t sleep_wake_cond;
-  pthread_mutex_t sleep_wake_mutex;
-
+  
   uint64_t avg_ns_per_loop;
 
   /* the sch sleep ratio */

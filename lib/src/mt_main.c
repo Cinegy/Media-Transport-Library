@@ -488,7 +488,11 @@ mtl_handle mtl_init(struct mtl_init_params* p) {
   rte_memcpy(&impl->user_para, p, sizeof(*p));
   impl->var_para.sch_default_sleep_us = 1 * US_PER_MS; /* default 1ms */
   /* use sleep zero if sleep us is smaller than this thresh */
+#ifndef WINDOWSENV
   impl->var_para.sch_zero_sleep_threshold_us = 200;
+#else
+  impl->var_para.sch_zero_sleep_threshold_us = 500;
+#endif
 
   rte_memcpy(&impl->kport_info, &kport_info, sizeof(kport_info));
   impl->type = MT_HANDLE_MAIN;

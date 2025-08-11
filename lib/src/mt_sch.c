@@ -46,18 +46,6 @@ static const char* lcore_type_name(enum mt_lcore_type type) {
     return "unknown";
 }
 
-static void sch_sleep_wakeup(struct mtl_sch_impl* sch) {
-  mt_pthread_mutex_lock(&sch->sleep_wake_mutex);
-  mt_pthread_cond_signal(&sch->sleep_wake_cond);
-  mt_pthread_mutex_unlock(&sch->sleep_wake_mutex);
-}
-
-static void sch_sleep_alarm_handler(void* param) {
-  struct mtl_sch_impl* sch = param;
-
-  sch_sleep_wakeup(sch);
-}
-
 static int sch_tasklet_sleep(struct mtl_main_impl* impl, struct mtl_sch_impl* sch) {
   /* get sleep us */
   uint64_t sleep_us = mt_sch_default_sleep_us(impl);
@@ -83,11 +71,7 @@ static int sch_tasklet_sleep(struct mtl_main_impl* impl, struct mtl_sch_impl* sc
   if (sleep_us < mt_sch_zero_sleep_thresh_us(impl)) {
     mt_sleep_ms(0);
   } else {
-    rte_eal_alarm_set(sleep_us, sch_sleep_alarm_handler, sch);
-    mt_pthread_mutex_lock(&sch->sleep_wake_mutex);
-    /* timeout 1s */
-    mt_pthread_cond_timedwait_ns(&sch->sleep_wake_cond, &sch->sleep_wake_mutex, NS_PER_S);
-    mt_pthread_mutex_unlock(&sch->sleep_wake_mutex);
+    mt_sleep_us(sleep_us > US_PER_S ? US_PER_S : sleep_us);
   }
   uint64_t end = mt_get_tsc(impl);
   uint64_t delta = end - start;
@@ -937,8 +921,6 @@ int mt_sch_mrg_init(struct mtl_main_impl* impl, int data_quota_mbs_limit) {
 
     /* sleep info init */
     sch->allow_sleep = mt_user_tasklet_sleep(impl);
-    mt_pthread_cond_wait_init(&sch->sleep_wake_cond);
-    mt_pthread_mutex_init(&sch->sleep_wake_mutex, NULL);
 
     sch->stat_sleep_ns_min = -1;
     /* init mgr lock for video */
@@ -988,9 +970,6 @@ int mt_sch_mrg_uinit(struct mtl_main_impl* impl) {
 
     mt_pthread_mutex_destroy(&sch->tx_fmd_mgr_mutex);
     mt_pthread_mutex_destroy(&sch->rx_fmd_mgr_mutex);
-
-    mt_pthread_mutex_destroy(&sch->sleep_wake_mutex);
-    mt_pthread_cond_destroy(&sch->sleep_wake_cond);
 
     mt_pthread_mutex_destroy(&sch->mutex);
   }
