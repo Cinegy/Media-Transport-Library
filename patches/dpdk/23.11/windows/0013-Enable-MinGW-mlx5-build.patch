@@ -1,0 +1,33 @@
+From 17fb32f2fd6a8e07d2943192edc7e791051bc2de Mon Sep 17 00:00:00 2001
+From: Evgeny Taruntaev <eugene@cinegy.com>
+Date: Mon, 11 Aug 2025 16:21:44 +0200
+Subject: [PATCH 13/15] Enable MinGW mlx5 build
+
+---
+ drivers/common/mlx5/meson.build | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/common/mlx5/meson.build b/drivers/common/mlx5/meson.build
+index 1eefc02f06..f57414500b 100644
+--- a/drivers/common/mlx5/meson.build
++++ b/drivers/common/mlx5/meson.build
+@@ -6,11 +6,11 @@ if not (is_linux or is_windows)
+     reason = 'only supported on Linux and Windows'
+     subdir_done()
+ endif
+-if is_windows and not is_ms_linker and not meson.is_cross_build()
+-    build = false
+-    reason = 'MinGW is supported only for cross-compilation test'
+-    subdir_done()
+-endif
++#if is_windows and not is_ms_linker and not meson.is_cross_build()
++#    build = false
++#    reason = 'MinGW is supported only for cross-compilation test'
++#    subdir_done()
++#endif
+ 
+ deps += ['hash', 'pci', 'bus_pci', 'bus_auxiliary', 'net', 'eal', 'kvargs']
+ sources += files(
+-- 
+2.50.1
+

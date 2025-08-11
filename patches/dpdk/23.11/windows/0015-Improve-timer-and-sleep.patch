@@ -1,0 +1,162 @@
+From 011a48aaf11acf7eeb6dcfd15f7fda1278f0578e Mon Sep 17 00:00:00 2001
+From: Evgeny Taruntaev <eugene@cinegy.com>
+Date: Mon, 11 Aug 2025 16:48:43 +0200
+Subject: [PATCH 15/15] Improve timer and sleep
+
+---
+ lib/eal/windows/eal_timer.c | 105 ++++++++++++------------------------
+ 1 file changed, 35 insertions(+), 70 deletions(-)
+
+diff --git a/lib/eal/windows/eal_timer.c b/lib/eal/windows/eal_timer.c
+index 3b33d17507..b87f12fa5e 100644
+--- a/lib/eal/windows/eal_timer.c
++++ b/lib/eal/windows/eal_timer.c
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: BSD-3-Clause
+  * Copyright 2020 Mellanox Technologies, Ltd
++ * Copyright (c) 2025 Cinegy GmbH
+  */
+ 
+ #include <inttypes.h>
+@@ -11,96 +12,61 @@
+ #include <rte_errno.h>
+ #include "eal_private.h"
+ 
++#include <bcrypt.h> // for NTSTATUS
++
+ #define US_PER_SEC 1E6
+ #define CYC_PER_10MHZ 1E7
+ 
+-typedef PVOID (*NtQueryTimerResolution_type)(
+-    PULONG MinimumResolution,
+-    PULONG MaximumResolution,
+-    PULONG CurrentResolution
+-);
+-
+-typedef PVOID (*NtSetTimerResolution_type)(
+-    ULONG RequestedResolution,
+-    BOOLEAN Set,
+-    PULONG ActualResolution
+-);
++static rte_spinlock_t func_lock = RTE_SPINLOCK_INITIALIZER;
+ 
+-static NtQueryTimerResolution_type NtQueryTimerResolution_ptr;
+-static NtSetTimerResolution_type NtSetTimerResolution_ptr;
++static NTSTATUS (__stdcall *NtDelayExecution)(
++	BOOLEAN Alertable,
++	PLARGE_INTEGER DelayInterval
++) = NULL;
+ 
+ static int set_timer_resolution(void)
+ {
+ 	ULONG minRes;
+ 	ULONG maxRes;
+ 	ULONG currentRes;
+-	static const char library_name[] = "ntdll.dll";
+-	static const char function1[] = "NtQueryTimerResolution";
+-	static const char function2[] = "NtSetTimerResolution";
+-
+-	HMODULE library = NULL;
+-
+-	library = LoadLibraryA(library_name);
+-	if (library == NULL) {
+-		RTE_LOG_WIN32_ERR("LoadLibraryA(\"%s\")", library_name);
+-		return -1;
+-	}
+-
+-	NtQueryTimerResolution_ptr = (NtQueryTimerResolution_type)(
+-		(void *)GetProcAddress(library, function1));
+-	if (NtQueryTimerResolution_ptr == NULL) {
+-		RTE_LOG_WIN32_ERR("GetProcAddress(\"%s\", \"%s\")\n",
+-			library_name, function1);
+-		return -1;
+-	}
+-
+-	NtSetTimerResolution_ptr = (NtSetTimerResolution_type)(
+-		(void *)GetProcAddress(library, function2));
+-	if (NtSetTimerResolution_ptr == NULL) {
+-		RTE_LOG_WIN32_ERR("GetProcAddress(\"%s\", \"%s\")\n",
+-			library_name, function2);
+-			return -1;
+-	}
+-
+-
+-	NtQueryTimerResolution_ptr(&minRes,&maxRes,&currentRes);
+-  NtSetTimerResolution_ptr(maxRes, TRUE, &currentRes);
+-  FreeLibrary(library);
+-  return 0;
++
++	NTSTATUS (__stdcall *NtQueryTimerResolution)(
++		PULONG MinimumResolution,
++		PULONG MaximumResolution,
++		PULONG CurrentResolution
++	) = (void *)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQueryTimerResolution");
++
++	NTSTATUS (__stdcall *NtSetTimerResolution)(
++		ULONG RequestedResolution,
++		BOOLEAN Set,
++		PULONG ActualResolution
++	) = (void *)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtSetTimerResolution");
++
++	NtQueryTimerResolution(&minRes, &maxRes, &currentRes);
++	NtSetTimerResolution(maxRes, TRUE, &currentRes);
++
++	return 0;
+ }
+ 
+ void
+ rte_delay_us_sleep(unsigned int us)
+ {
+-	HANDLE timer;
+ 	LARGE_INTEGER due_time;
+ 
+-	/* create waitable timer */
+-	timer = CreateWaitableTimer(NULL, TRUE, NULL);
+-	if (!timer) {
+-		RTE_LOG_WIN32_ERR("CreateWaitableTimer()");
+-		rte_errno = ENOMEM;
+-		return;
+-	}
++	rte_spinlock_lock(&func_lock);
++	
++	if (NtDelayExecution == NULL)
++		NtDelayExecution = (void *)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtDelayExecution");
++
++	rte_spinlock_unlock(&func_lock);
+ 
+ 	/*
+-	 * due_time's uom is 100 ns, multiply by 10 to convert to microseconds
+-	 * set us microseconds time for timer
++	 * due_time's uom is 100 ns, multiply by 10 to convert 
++	 * to microseconds
+ 	 */
+ 	due_time.QuadPart = -((int64_t)us * 10);
+-	if (!SetWaitableTimer(timer, &due_time, 0, NULL, NULL, FALSE)) {
+-		RTE_LOG_WIN32_ERR("SetWaitableTimer()");
+-		rte_errno = EINVAL;
+-		goto end;
+-	}
+-	/* start wait for timer for us microseconds */
+-	if (WaitForSingleObject(timer, INFINITE) == WAIT_FAILED) {
+-		RTE_LOG_WIN32_ERR("WaitForSingleObject()");
+-		rte_errno = EINVAL;
+-	}
+-
+-end:
+-	CloseHandle(timer);
++
++	NtDelayExecution(FALSE, &due_time);
+ }
+ 
+ uint64_t
+@@ -140,7 +106,6 @@ get_tsc_freq(void)
+ 	return RTE_ALIGN_MUL_NEAR(tsc_hz, CYC_PER_10MHZ);
+ }
+ 
+-
+ int
+ rte_eal_timer_init(void)
+ {
+-- 
+2.50.1
+

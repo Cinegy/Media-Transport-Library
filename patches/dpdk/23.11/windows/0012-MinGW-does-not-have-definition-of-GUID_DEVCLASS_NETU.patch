@@ -1,0 +1,25 @@
+From f29a9e7794fdeb01b16733f76a73c5f373e6037c Mon Sep 17 00:00:00 2001
+From: Evgeny Taruntaev <eugene@cinegy.com>
+Date: Mon, 11 Aug 2025 16:20:34 +0200
+Subject: [PATCH 12/15] MinGW does not have definition of GUID_DEVCLASS_NETUIO
+
+---
+ drivers/bus/pci/windows/pci_netuio.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/bus/pci/windows/pci_netuio.h b/drivers/bus/pci/windows/pci_netuio.h
+index 2f6c97ea73..21e598c162 100644
+--- a/drivers/bus/pci/windows/pci_netuio.h
++++ b/drivers/bus/pci/windows/pci_netuio.h
+@@ -5,7 +5,7 @@
+ #ifndef _PCI_NETUIO_H_
+ #define _PCI_NETUIO_H_
+ 
+-#if !defined(NTDDI_WIN10_FE) || NTDDI_VERSION < NTDDI_WIN10_FE
++#if !defined(NTDDI_WIN10_FE) || NTDDI_VERSION < NTDDI_WIN10_FE || defined(__MINGW32__)
+ /* GUID definition for device class netUIO */
+ DEFINE_GUID(GUID_DEVCLASS_NETUIO, 0x78912bc1, 0xcb8e, 0x4b28,
+ 	0xa3, 0x29, 0xf3, 0x22, 0xeb, 0xad, 0xbe, 0x0f);
+-- 
+2.50.1
+
