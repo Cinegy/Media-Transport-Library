@@ -889,6 +889,36 @@ static int dev_config_rss_reta(struct mt_interface* inf) {
   return 0;
 }
 
+static int dev_set_port_ptypes(struct mt_interface* inf) {
+  uint16_t port_id = inf->port_id;
+  enum mtl_port port = inf->port;
+  int ret;
+
+  /* enable PTYPE for packet classification by NIC */
+  uint32_t ptypes[16];
+  uint32_t set_ptypes[16];
+  uint32_t ptype_mask = RTE_PTYPE_L2_ETHER_TIMESYNC | RTE_PTYPE_L2_ETHER_ARP |
+                        RTE_PTYPE_L2_ETHER_VLAN | RTE_PTYPE_L2_ETHER_QINQ |
+                        RTE_PTYPE_L4_ICMP | RTE_PTYPE_L3_IPV4 | RTE_PTYPE_L4_UDP |
+                        RTE_PTYPE_L4_FRAG;
+  int num_ptypes =
+      rte_eth_dev_get_supported_ptypes(port_id, ptype_mask, ptypes, RTE_DIM(ptypes));
+  for (int i = 0; i < num_ptypes; i++) {
+    set_ptypes[i] = ptypes[i];
+  }
+  if (num_ptypes >= 5) {
+    ret = rte_eth_dev_set_ptypes(port_id, ptype_mask, set_ptypes, num_ptypes);
+    if (ret < 0) {
+      err("%s(%d), rte_eth_dev_set_ptypes fail %d\n", __func__, port, ret);
+      return ret;
+    }
+  } else {
+    warn("%s(%d), failed to setup all ptype, only %d supported\n", __func__, port,
+         num_ptypes);
+  }
+  return 0;
+}
+
 static int dev_config_port(struct mt_interface* inf) {
   struct mtl_main_impl* impl = inf->parent;
   uint16_t port_id = inf->port_id;
@@ -980,30 +1010,7 @@ static int dev_config_port(struct mt_interface* inf) {
   }
   inf->nb_tx_desc = nb_tx_desc;
   inf->nb_rx_desc = nb_rx_desc;
-
-  /* enable PTYPE for packet classification by NIC */
-  uint32_t ptypes[16];
-  uint32_t set_ptypes[16];
-  uint32_t ptype_mask = RTE_PTYPE_L2_ETHER_TIMESYNC | RTE_PTYPE_L2_ETHER_ARP |
-                        RTE_PTYPE_L2_ETHER_VLAN | RTE_PTYPE_L2_ETHER_QINQ |
-                        RTE_PTYPE_L4_ICMP | RTE_PTYPE_L3_IPV4 | RTE_PTYPE_L4_UDP |
-                        RTE_PTYPE_L4_FRAG;
-  int num_ptypes =
-      rte_eth_dev_get_supported_ptypes(port_id, ptype_mask, ptypes, RTE_DIM(ptypes));
-  for (int i = 0; i < num_ptypes; i++) {
-    set_ptypes[i] = ptypes[i];
-  }
-  if (num_ptypes >= 5) {
-    ret = rte_eth_dev_set_ptypes(port_id, ptype_mask, set_ptypes, num_ptypes);
-    if (ret < 0) {
-      err("%s(%d), rte_eth_dev_set_ptypes fail %d\n", __func__, port, ret);
-      return ret;
-    }
-  } else {
-    warn("%s(%d), failed to setup all ptype, only %d supported\n", __func__, port,
-         num_ptypes);
-  }
-
+  
   inf->status |= MT_IF_STAT_PORT_CONFIGURED;
   info("%s(%d), tx_q(%d with %d desc) rx_q (%d with %d desc)\n", __func__, port, nb_tx_q,
        nb_tx_desc, nb_rx_q, nb_rx_desc);
@@ -1163,6 +1170,12 @@ static int dev_start_port(struct mt_interface* inf) {
   ret = rte_eth_dev_start(port_id);
   if (ret < 0) {
     err("%s(%d), rte_eth_dev_start fail %d\n", __func__, port, ret);
+    return ret;
+  }
+
+  ret = dev_set_port_ptypes(inf);
+  if (ret < 0) {
+    err("%s(%d), dev_set_port_ptypes fail %d\n", __func__, port, ret);
     return ret;
   }
 
@@ -1839,6 +1852,11 @@ int mt_dev_create(struct mtl_main_impl* impl) {
         ret = dev_config_port(inf);
         if (ret < 0) {
           err("%s(%d), dev_config_port fail %d\n", __func__, i, ret);
+          goto err_exit;
+        }
+        ret = dev_set_port_ptypes(inf);
+        if (ret < 0) {
+          err("%s(%d), dev_set_port_ptypes fail %d\n", __func__, i, ret);
           goto err_exit;
         }
         goto retry;
