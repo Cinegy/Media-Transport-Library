@@ -136,6 +136,12 @@ static void* mt_calibrate_tsc(void* arg) {
 static int mt_main_create(struct mtl_main_impl* impl) {
   int ret;
 
+  ret = pthread_mutex_init(&impl->ptp_usync_lock, NULL);
+  if (ret < 0) {
+    err("%s, pthread_mutex_init(ptp_usync_lock) fail %d\n", __func__, ret);
+    return ret;
+  }
+
   ret = mt_flow_init(impl);
   if (ret < 0) {
     err("%s, mt flow init fail %d\n", __func__, ret);
@@ -249,6 +255,8 @@ static int mt_main_free(struct mtl_main_impl* impl) {
 
   mt_dev_free(impl);
   mt_flow_uinit(impl);
+
+  pthread_mutex_destroy(&impl->ptp_usync_lock);
   info("%s, succ\n", __func__);
   return 0;
 }
@@ -1092,19 +1100,25 @@ uint64_t mtl_ptp_read_time(mtl_handle mt) {
     return 0;
   }
 
+  pthread_mutex_lock(&impl->ptp_usync_lock);
+
   mt_wait_tsc_stable(impl);
 
   uint64_t tsc = mt_get_tsc(impl);
   uint64_t diff = tsc - impl->ptp_usync_tsc;
+  uint64_t ptp = impl->ptp_usync;
   if (diff < (10 * NS_PER_MS)) {
     /* use cache read since ptp read is an expensive mmio operation */
-    return impl->ptp_usync + diff;
+    pthread_mutex_unlock(&impl->ptp_usync_lock);
+    return ptp + diff;
   }
 
-  uint64_t ptp = mt_get_ptp_time(impl, port);
+  ptp = mt_get_ptp_time(impl, port);
   /* update sync point */
   impl->ptp_usync_tsc = mt_get_tsc(impl);
   impl->ptp_usync = ptp;
+  
+  pthread_mutex_unlock(&impl->ptp_usync_lock);
   return ptp;
 }
 
