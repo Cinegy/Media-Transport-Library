@@ -131,38 +131,6 @@ static int parse_driver_info(const char* driver, struct mt_dev_driver_info* drv_
   return 0;
 }
 
-static void dev_eth_xstat(uint16_t port_id) {
-  /* Get count */
-  int cnt = rte_eth_xstats_get_names(port_id, NULL, 0);
-  if (cnt < 0) {
-    err("%s(%u), get names fail\n", __func__, port_id);
-    return;
-  }
-
-  /* Get id-name lookup table */
-  struct rte_eth_xstat_name names[cnt];
-  memset(names, 0, cnt * sizeof(names[0]));
-  if (cnt != rte_eth_xstats_get_names(port_id, &names[0], cnt)) {
-    err("%s(%u), get cnt names fail\n", __func__, port_id);
-    return;
-  }
-
-  /* Get stats themselves */
-  struct rte_eth_xstat xstats[cnt];
-  memset(xstats, 0, cnt * sizeof(xstats[0]));
-  if (cnt != rte_eth_xstats_get(port_id, &xstats[0], cnt)) {
-    err("%s(%u), cnt mismatch\n", __func__, port_id);
-    return;
-  }
-
-  /* Display xstats, err level since this called only with error case */
-  for (int i = 0; i < cnt; i++) {
-    if (xstats[i].value) {
-      err("%s: %" PRIu64 "\n", names[i].name, xstats[i].value);
-    }
-  }
-}
-
 static inline void diff_and_update(uint64_t* new, uint64_t* old) {
   uint64_t temp = *new;
   *new -= *old;
@@ -267,7 +235,6 @@ static int dev_inf_stat(void* pri) {
   struct mt_interface* inf = pri;
   struct mtl_main_impl* impl = inf->parent;
   enum mtl_port port = inf->port;
-  uint16_t port_id = inf->port_id;
   struct mtl_port_status* stats_sum;
 
   dev_inf_get_stat(inf);
@@ -286,11 +253,6 @@ static int dev_inf_stat(void* pri) {
         " rx_nombuf_packets %" PRIu64 " tx_err_packets %" PRIu64 "\n",
         port, stats_sum->rx_hw_dropped_packets, stats_sum->rx_err_packets,
         stats_sum->rx_nombuf_packets, stats_sum->tx_err_packets);
-    dev_eth_xstat(port_id);
-  }
-
-  if (!inf->dev_stats_not_reset && !inf->dev_stats_sw) {
-    rte_eth_xstats_reset(port_id);
   }
 
   /* clear the stats_sum */
