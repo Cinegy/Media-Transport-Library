@@ -449,13 +449,21 @@ static int sch_stat(void* priv) {
   return 0;
 }
 
+//#define MT_FLOCK_NAME "mt_lcore.lock"
+
 static int sch_filelock_lock(struct mt_sch_mgr* mgr) {
-  int fd = open(MT_FLOCK_PATH, O_RDONLY | O_CREAT, 0666);
+  char flock_path[256] = "/tmp/mt_lcore.lock";
+#ifdef WINDOWSENV
+  strcpy(flock_path, getenv("TEMP"));
+  strcat(flock_path, "\\mt_lcore.lock");
+#endif
+
+  int fd = open(flock_path, O_RDONLY | O_CREAT, 0666);
   if (fd < 0) {
     /* sometimes may fail due to user permission, try open read-only */
-    fd = open(MT_FLOCK_PATH, O_RDONLY);
+    fd = open(flock_path, O_RDONLY);
     if (fd < 0) {
-      err("%s, failed to open %s, %s\n", __func__, MT_FLOCK_PATH, strerror(errno));
+      err("%s, failed to open %s, %s\n", __func__, flock_path, strerror(errno));
       return -EIO;
     }
   }

@@ -51,12 +51,6 @@ typedef unsigned long int nfds_t;
 #define MT_THREAD_TIMEDWAIT_CLOCK_ID CLOCK_MONOTONIC
 #endif
 
-#ifdef WINDOWSENV
-#define MT_FLOCK_PATH "c:/temp/kahawai_lcore.lock"
-#else
-#define MT_FLOCK_PATH "/tmp/kahawai_lcore.lock"
-#endif
-
 #ifndef WINDOWSENV
 #define MT_ENABLE_P_SHARED /* default enable PTHREAD_PROCESS_SHARED */
 #endif
