@@ -555,6 +555,10 @@ static int mcast_inf_add_mac(struct mt_interface* inf, struct rte_ether_addr* mc
   }
 
   mcast_addr_pool_append(inf, mcast_mac);
+#ifdef WINDOWSENV
+  /* Mellanox PMD does not support adding or removing MACs under Windows */
+  if (inf->drv_info.drv_type == MT_DRV_MLX5) return 0;
+#endif
   if (inf->drv_info.flags & MT_DRV_F_USE_MC_ADDR_LIST)
     return rte_eth_dev_set_mc_addr_list(port_id, inf->mcast_mac_lists, inf->mcast_nb);
   else
@@ -577,6 +581,10 @@ static int mcast_inf_remove_mac(struct mt_interface* inf,
   }
 
   mcast_addr_pool_remove(inf, i);
+#ifdef WINDOWSENV
+  /* Mellanox PMD does not support adding or removing MACs under Windows */
+  if (inf->drv_info.drv_type == MT_DRV_MLX5) return 0;
+#endif
   if (inf->drv_info.flags & MT_DRV_F_USE_MC_ADDR_LIST)
     return rte_eth_dev_set_mc_addr_list(port_id, inf->mcast_mac_lists, inf->mcast_nb);
   else
