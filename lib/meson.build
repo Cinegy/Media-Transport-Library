@@ -122,6 +122,10 @@ if is_windows
   mtl_include_dir += include_directories(dpdk_root_dir + '''\lib\eal\windows\include\''')
   # generate .def file to be converted to .lib for msvc
   mtl_link_c_args += ['-Wl,--output-def,libmtl.def']
+  if get_option('buildtype').startswith('debug')
+    mtl_c_args += ['-gcodeview']
+    mtl_link_c_args += ['-Wl,--pdb=']
+  endif
 endif
 
 mtl_has_simd = true
