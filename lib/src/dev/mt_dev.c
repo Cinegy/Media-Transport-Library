@@ -810,7 +810,7 @@ static int dev_start_timesync(struct mt_interface* inf) {
       info("%s(%d), init ptp time %s, i %d\n", __func__, port, date_time, i);
       break;
     }
-    dbg("%s(%d), tv_sec %" PRIu64 " tv_nsec %" PRIu64 ", i %d\n", __func__, port,
+    dbg("%s(%d), tv_sec %" PRIu64 " tv_nsec %ld, i %d\n", __func__, port,
         spec.tv_sec, spec.tv_nsec, i);
     mt_sleep_ms(10);
   }

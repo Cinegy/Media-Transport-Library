@@ -634,7 +634,11 @@ int mufd_poll_query(struct pollfd* fds, nfds_t nfds, int timeout,
   struct ufd_slot* slot;
 
   for (nfds_t i = 0; i < nfds; i++) {
+#ifdef WINDOWSENV
+    dbg("%s, fd %llu\n", __func__, fds[i].fd);
+#else
     dbg("%s, fd %d\n", __func__, fds[i].fd);
+#endif
     slot = ufd_fd2slot(fds[i].fd);
     mfds[i].fd = slot->handle;
     mfds[i].events = fds[i].events;

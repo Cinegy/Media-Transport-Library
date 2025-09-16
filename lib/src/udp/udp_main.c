@@ -1116,7 +1116,7 @@ static int udp_fallback_poll(struct mudp_pollfd* fds, mudp_nfds_t nfds, int time
 #ifdef WINDOWSENV
   MTL_MAY_UNUSED(timeout);
   ret = -EIO;
-  err("%s(%d), not support on this platform\n", __func__, s->idx);
+  err("%s, not support on this platform\n", __func__);
 #else
   ret = poll(p_fds, nfds, timeout);
 #endif
