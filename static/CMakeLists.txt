@@ -1,9 +1,11 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 4.1)
 project("mtl")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(DPDK REQUIRED libdpdk)
+
 pkg_check_modules(JSON_C REQUIRED json-c IMPORTED_TARGET)
+
 pkg_check_modules(BPF libbpf IMPORTED_TARGET)
 pkg_check_modules(XDP libxdp IMPORTED_TARGET)
 
@@ -35,6 +37,13 @@ list(GET MTL_VERSION_LIST 3 MTL_VERSION_EXTRA)
 math(EXPR MTL_VERSION_MAJOR ${MTL_VERSION_MAJOR})
 math(EXPR MTL_VERSION_MINOR ${MTL_VERSION_MINOR})
 math(EXPR MTL_VERSION_LAST ${MTL_VERSION_LAST})
+
+if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64" OR ${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm64" OR "arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
+	set(ARM64_BUILD TRUE)
+else()
+	set(ARM64_BUILD FALSE)
+endif()
+
 
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 
@@ -114,7 +123,9 @@ target_compile_definitions(mtl PRIVATE __MTL_LIB_BUILD__="${MTL_VERSION}")
 target_compile_definitions(mtl PRIVATE __MTL_GIT__="${MTL_GIT}")
 target_compile_definitions(mtl PRIVATE ALLOW_EXPERIMENTAL_API)
 
-target_compile_options(mtl PRIVATE -msse4.2 -DMTL_HAS_AVX2 -DMTL_HAS_AVX512 -DMTL_HAS_AVX512_VBMI2)
+if(NOT ARM64_BUILD)
+	target_compile_options(mtl PRIVATE -msse4.2 -DMTL_HAS_AVX2 -DMTL_HAS_AVX512 -DMTL_HAS_AVX512_VBMI2)
+endif()
 target_compile_options(mtl PRIVATE ${DPDK_STATIC_CFLAGS})
 
 target_link_options(mtl PRIVATE ${DPDK_STATIC_LDFLAGS})
