@@ -11,6 +11,14 @@
 
 #define IPV4_IGMPV3_REPORT_GROUP ((uint32_t)0xe0000016) /**< 224.0.0.22 */
 
+/*
+ * IGMP messages carry the IPv4 Router Alert option (RFC 2113), see RFC 2236
+ * section 3. Some IGMP snooping switches (e.g. Netgear ProSAFE XS7xxT) drop
+ * IGMP packets without it.
+ */
+#define MCAST_IP_ROUTER_ALERT_OPT_LEN (4)
+#define MCAST_IP_HDR_LEN (sizeof(struct rte_ipv4_hdr) + MCAST_IP_ROUTER_ALERT_OPT_LEN)
+
 #define IGMP_JOIN_GROUP_PERIOD_S (10)
 #define IGMP_JOIN_GROUP_PERIOD_US (IGMP_JOIN_GROUP_PERIOD_S * US_PER_S)
 

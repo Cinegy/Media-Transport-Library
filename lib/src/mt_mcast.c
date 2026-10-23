@@ -32,7 +32,11 @@ static uint16_t mcast_msg_checksum(enum mcast_msg_type type, void* msg,
       break;
   }
 
-  return mt_rf1071_check_sum(msg, size, true);
+  uint16_t checksum = mt_rf1071_check_sum(msg, size, true);
+  /* RFC 1071: a computed checksum of zero is transmitted as all ones */
+  if (checksum == 0) checksum = 0xFFFF;
+
+  return checksum;
 }
 
 /* group record shaping, return record length, refer to RFC3376 - 4.2.4 */
@@ -101,6 +105,7 @@ static struct rte_ipv4_hdr* mcast_fill_ipv4(struct mtl_main_impl* impl,
                                             enum mtl_port port, struct rte_mbuf* pkt, uint32_t dst_ip) {
   struct rte_ether_hdr* eth_hdr;
   struct rte_ipv4_hdr* ip_hdr;
+  uint8_t* opt;
   
   eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr*);
   mt_macaddr_get(impl, port, mt_eth_s_addr(eth_hdr));
@@ -108,7 +113,8 @@ static struct rte_ipv4_hdr* mcast_fill_ipv4(struct mtl_main_impl* impl,
   eth_hdr->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
   ip_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr*, sizeof(*eth_hdr));
-  ip_hdr->version_ihl = (4 << 4) | (sizeof(struct rte_ipv4_hdr) / 4);
+  ip_hdr->version_ihl = (4 << 4) | (MCAST_IP_HDR_LEN / 4);
+  ip_hdr->packet_id = 0;
   ip_hdr->time_to_live = 1;
   ip_hdr->type_of_service = IP_IGMP_DSCP_VALUE;
   ip_hdr->fragment_offset = MT_IP_DONT_FRAGMENT_FLAG;
@@ -118,7 +124,24 @@ static struct rte_ipv4_hdr* mcast_fill_ipv4(struct mtl_main_impl* impl,
   ip_hdr->src_addr = *(uint32_t*)mt_sip_addr(impl, port);
   ip_hdr->dst_addr = dst_ip;
 
+  /* router alert option (RFC 2113), mandatory for IGMP per RFC 2236 */
+  opt = (uint8_t*)(ip_hdr + 1);
+  opt[0] = 0x94; /* control: copy on router, class 0, number 130 */
+  opt[1] = 0x04; /* option length, includes the two header bytes */
+  opt[2] = 0x00;
+  opt[3] = 0x00;
+
+  if (!mt_if_has_offload_ipv4_cksum(impl, port)) {
+    /* generate cksum if no offload, rte_ipv4_cksum covers the option too */
+    ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
+  }
+
   return ip_hdr;
+}
+
+static inline void mcast_mbuf_init_ipv4(struct rte_mbuf* pkt) {
+  mt_mbuf_init_ipv4(pkt);
+  pkt->l3_len = MCAST_IP_HDR_LEN;
 }
 
 #ifdef MCAST_ENABLE_QUERY
@@ -137,7 +160,7 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
   }
 
   ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(RTE_IPV4_ALLHOSTS_GROUP));
-  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + MCAST_IP_HDR_LEN;
 
   mb_query = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_query_v3*, hdr_offset);
   mb_query->type = MEMBERSHIP_QUERY;
@@ -150,15 +173,11 @@ int mcast_membership_general_query(struct mtl_main_impl* impl, enum mtl_port por
   mb_query->group_addr = 0;
   mb_query->num_sources = 0;
 
-  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, mb_query, 0);
-  if (checksum <= 0) {
-    err("%s(%d), err checksum %d\n", __func__, checksum, port);
-    return -EIO;
-  }
+  uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_QUERY, mb_query, mb_query_len);
   mb_query->checksum = htons(checksum);
 
-  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_query_len);
-  mt_mbuf_init_ipv4(pkt);
+  ip_hdr->total_length = htons(MCAST_IP_HDR_LEN + mb_query_len);
+  mcast_mbuf_init_ipv4(pkt);
   pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_query_len;
   pkt->data_len = pkt->pkt_len;
 
@@ -188,7 +207,7 @@ static int mcast_membership_report_on_query_v2_single(struct mtl_main_impl* impl
   }
 
   ip_hdr = mcast_fill_ipv4(impl, port, pkt, group_addr);
-  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + MCAST_IP_HDR_LEN;
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_msg_v2*, hdr_offset);
   mb_report->type = MEMBERSHIP_REPORT_V2;
@@ -197,15 +216,11 @@ static int mcast_membership_report_on_query_v2_single(struct mtl_main_impl* impl
   mb_report->group_addr = group_addr;
 
   uint16_t checksum = mcast_msg_checksum(mb_report->type, mb_report, mb_report_len);
-  if (checksum <= 0) {
-    err("%s(%d), err checksum %d\n", __func__, checksum, port);
-    return -EIO;
-  }
-  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
+  dbg("%s(%d), checksum %d\n", __func__, port, checksum);
   mb_report->checksum = htons(checksum);
 
-  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
-  mt_mbuf_init_ipv4(pkt);
+  ip_hdr->total_length = htons(MCAST_IP_HDR_LEN + mb_report_len);
+  mcast_mbuf_init_ipv4(pkt);
   pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
   pkt->data_len = pkt->pkt_len;
 
@@ -275,7 +290,7 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
   }
 
   ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(IPV4_IGMPV3_REPORT_GROUP));
-  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + MCAST_IP_HDR_LEN;
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_report_v3*, hdr_offset);
   mb_report->type = MEMBERSHIP_REPORT_V3;
@@ -295,15 +310,11 @@ static int mcast_membership_report_on_query(struct mtl_main_impl* impl,
   }
 
   uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_REPORT_V3, mb_report, mb_report_len);
-  if (checksum <= 0) {
-    err("%s(%d), err checksum %d\n", __func__, port, checksum);
-    return -EIO;
-  }
   dbg("%s(%d), checksum %d\n", __func__, port, checksum);
   mb_report->checksum = htons(checksum);
 
-  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
-  mt_mbuf_init_ipv4(pkt);
+  ip_hdr->total_length = htons(MCAST_IP_HDR_LEN + mb_report_len);
+  mcast_mbuf_init_ipv4(pkt);
   pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
   pkt->data_len = pkt->pkt_len;
 
@@ -345,7 +356,7 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
   }
 
   ip_hdr = mcast_fill_ipv4(impl, port, pkt, RTE_BE32(IPV4_IGMPV3_REPORT_GROUP));
-  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + MCAST_IP_HDR_LEN;
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_report_v3*, hdr_offset);
   mb_report->type = MEMBERSHIP_REPORT_V3;
@@ -361,15 +372,11 @@ static int mcast_membership_report_on_action(struct mtl_main_impl* impl,
     mb_report_len += mcast_create_group_record_leave(group_addr, src_addr, group_record);
 
   uint16_t checksum = mcast_msg_checksum(MEMBERSHIP_REPORT_V3, mb_report, mb_report_len);
-  if (checksum <= 0) {
-    err("%s(%d), err checksum %d\n", __func__, checksum, port);
-    return -EIO;
-  }
-  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
+  dbg("%s(%d), checksum %d\n", __func__, port, checksum);
   mb_report->checksum = htons(checksum);
 
-  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
-  mt_mbuf_init_ipv4(pkt);
+  ip_hdr->total_length = htons(MCAST_IP_HDR_LEN + mb_report_len);
+  mcast_mbuf_init_ipv4(pkt);
   pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
   pkt->data_len = pkt->pkt_len;
 
@@ -419,7 +426,7 @@ static int mcast_membership_report_on_action_v2(struct mtl_main_impl* impl,
   }
 
   ip_hdr = mcast_fill_ipv4(impl, port, pkt, action == MCAST_JOIN ? group_addr : RTE_BE32(RTE_IPV4_ALLRTRS_GROUP));
-  hdr_offset += sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+  hdr_offset += sizeof(struct rte_ether_hdr) + MCAST_IP_HDR_LEN;
 
   mb_report = rte_pktmbuf_mtod_offset(pkt, struct mcast_mb_msg_v2*, hdr_offset);
   mb_report->type = action == MCAST_JOIN ? MEMBERSHIP_REPORT_V2 : LEAVE_GROUP;
@@ -428,15 +435,11 @@ static int mcast_membership_report_on_action_v2(struct mtl_main_impl* impl,
   mb_report->group_addr = group_addr;
 
   uint16_t checksum = mcast_msg_checksum(mb_report->type, mb_report, mb_report_len);
-  if (checksum <= 0) {
-    err("%s(%d), err checksum %d\n", __func__, checksum, port);
-    return -EIO;
-  }
-  dbg("%s(%d), checksum %d\n", __func__, checksum, port);
+  dbg("%s(%d), checksum %d\n", __func__, port, checksum);
   mb_report->checksum = htons(checksum);
 
-  ip_hdr->total_length = htons(sizeof(struct rte_ipv4_hdr) + mb_report_len);
-  mt_mbuf_init_ipv4(pkt);
+  ip_hdr->total_length = htons(MCAST_IP_HDR_LEN + mb_report_len);
+  mcast_mbuf_init_ipv4(pkt);
   pkt->pkt_len = pkt->l2_len + pkt->l3_len + mb_report_len;
   pkt->data_len = pkt->pkt_len;
 
